@@ -28,9 +28,11 @@ def get_counts(conn):
 
 
 def get_catalog(conn):
-    return conn.execute(text(
-        "SELECT name, price, stock FROM products ORDER BY name"
-    )).fetchall()
+    return conn.execute(text("""
+        SELECT name, price, stock
+        FROM products
+        ORDER BY name
+    """)).fetchall()
 
 
 def get_top_customers(conn):
@@ -55,10 +57,9 @@ def get_low_stock(conn):
 
 
 def get_revenue(conn):
-    # Cancelled orders are filtered in ON, so products without orders still show up
     return conn.execute(text("""
         SELECT products.name,
-               COALESCE(SUM(orders.unit_price * orders.quantity), 0) AS revenue
+               COALESCE(SUM(products.price * orders.quantity), 0) AS revenue
         FROM products
         LEFT JOIN orders
             ON orders.product_id = products.id
@@ -103,27 +104,36 @@ def store_report(engine):
     )
 
     print_section(
-        "Catalog", catalog,
+        "Catalog",
+        catalog,
         lambda p: f"{p.name}  ${p.price}  (stock {p.stock})",
         "No products yet",
     )
+
     print_section(
-        "Top customers", top_customers,
+        "Top customers",
+        top_customers,
         lambda c: f"{c.email} - {c.total_items} items",
         "No orders yet",
     )
+
     print_section(
-        "Low stock products", low_stock,
+        "Low stock products",
+        low_stock,
         lambda p: f"{p.name} - stock {p.stock}",
         "No products with low stock",
     )
+
     print_section(
-        "Revenue per product", revenue,
+        "Revenue per product",
+        revenue,
         lambda p: f"{p.name} - ${p.revenue:.2f}",
         "No products yet",
     )
+
     print_section(
-        "Users without orders", no_orders,
+        "Users without orders",
+        no_orders,
         lambda u: u.email,
         "All users have placed orders",
     )
@@ -133,7 +143,8 @@ def store_report(engine):
 
 def add_product(engine, name, category, price, stock):
     """Insert a new product and return its id."""
-    name, category = name.strip(), category.strip()
+    name = name.strip()
+    category = category.strip()
 
     if not name:
         raise ValueError("Product name cannot be empty")
@@ -145,7 +156,7 @@ def add_product(engine, name, category, price, stock):
         raise ValueError("Stock cannot be negative")
 
     with engine.begin() as conn:
-        return conn.execute(text("""
+        product_id = conn.execute(text("""
             INSERT INTO products (name, category, price, stock)
             VALUES (:name, :category, :price, :stock)
             RETURNING id
@@ -155,6 +166,8 @@ def add_product(engine, name, category, price, stock):
             "price": price,
             "stock": stock,
         }).scalar_one()
+
+    return product_id
 
 
 def place_order(engine, email, product_name, quantity):
@@ -167,33 +180,50 @@ def place_order(engine, email, product_name, quantity):
             text("SELECT id FROM users WHERE lower(email) = lower(:email)"),
             {"email": email.strip()},
         ).scalar_one_or_none()
+
         if user_id is None:
             raise ValueError("User not found")
 
-        # FOR UPDATE locks the row so two buyers can't take the last item
+        # Lock the product row to prevent simultaneous orders
+        # from reducing stock below zero.
         product = conn.execute(
-            text("SELECT id, price, stock FROM products WHERE name = :name FOR UPDATE"),
+            text("""
+                SELECT id, stock
+                FROM products
+                WHERE name = :name
+                FOR UPDATE
+            """),
             {"name": product_name.strip()},
         ).mappings().one_or_none()
+
         if product is None:
             raise ValueError("Product not found")
+
         if product["stock"] < quantity:
-            raise ValueError(f"Not enough stock. Available: {product['stock']}")
+            raise ValueError(
+                f"Not enough stock. Available: {product['stock']}"
+            )
 
         order_id = conn.execute(text("""
-            INSERT INTO orders (user_id, product_id, quantity, unit_price, status)
-            VALUES (:user_id, :product_id, :quantity, :unit_price, 'pending')
+            INSERT INTO orders (user_id, product_id, quantity, status)
+            VALUES (:user_id, :product_id, :quantity, 'pending')
             RETURNING id
         """), {
             "user_id": user_id,
             "product_id": product["id"],
             "quantity": quantity,
-            "unit_price": product["price"],
         }).scalar_one()
 
         conn.execute(
-            text("UPDATE products SET stock = stock - :qty WHERE id = :id"),
-            {"qty": quantity, "id": product["id"]},
+            text("""
+                UPDATE products
+                SET stock = stock - :qty
+                WHERE id = :id
+            """),
+            {
+                "qty": quantity,
+                "id": product["id"],
+            },
         )
 
     return order_id
@@ -206,8 +236,10 @@ def read_price(prompt):
         price = Decimal(input(prompt))
     except InvalidOperation:
         raise ValueError("Price must be a number")
+
     if not price.is_finite():
         raise ValueError("Price must be a finite number")
+
     return price
 
 
@@ -258,6 +290,7 @@ def main():
             break
 
         action = actions.get(choice)
+
         if action is None:
             print("Invalid option. Try again.")
             continue
