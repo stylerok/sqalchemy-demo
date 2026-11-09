@@ -12,9 +12,12 @@ TOP_CUSTOMERS_LIMIT = 3
 
 
 def get_engine():
+    """Create and return a SQLAlchemy engine from DATABASE_URL."""
     url = os.getenv("DATABASE_URL")
+
     if not url:
         raise ValueError("DATABASE_URL is missing in .env file")
+
     return create_engine(url, pool_pre_ping=True)
 
 
@@ -22,7 +25,9 @@ def get_engine():
 
 def get_counts(conn):
     return {
-        table: conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
+        table: conn.execute(
+            text(f"SELECT COUNT(*) FROM {table}")
+        ).scalar()
         for table in ("users", "products", "orders")
     }
 
@@ -36,24 +41,29 @@ def get_catalog(conn):
 
 
 def get_top_customers(conn):
-    return conn.execute(text("""
-        SELECT users.email, SUM(orders.quantity) AS total_items
-        FROM users
-        JOIN orders ON users.id = orders.user_id
-        WHERE orders.status != 'cancelled'
-        GROUP BY users.id, users.email
-        ORDER BY total_items DESC
-        LIMIT :limit
-    """), {"limit": TOP_CUSTOMERS_LIMIT}).fetchall()
+    return conn.execute(
+        text("""
+            SELECT users.email, SUM(orders.quantity) AS total_items
+            FROM users
+            JOIN orders ON users.id = orders.user_id
+            GROUP BY users.id, users.email
+            ORDER BY total_items DESC
+            LIMIT :limit
+        """),
+        {"limit": TOP_CUSTOMERS_LIMIT},
+    ).fetchall()
 
 
 def get_low_stock(conn):
-    return conn.execute(text("""
-        SELECT name, stock
-        FROM products
-        WHERE stock < :limit
-        ORDER BY stock, name
-    """), {"limit": LOW_STOCK_LIMIT}).fetchall()
+    return conn.execute(
+        text("""
+            SELECT name, stock
+            FROM products
+            WHERE stock < :limit
+            ORDER BY stock, name
+        """),
+        {"limit": LOW_STOCK_LIMIT},
+    ).fetchall()
 
 
 def get_revenue(conn):
@@ -63,7 +73,6 @@ def get_revenue(conn):
         FROM products
         LEFT JOIN orders
             ON orders.product_id = products.id
-           AND orders.status != 'cancelled'
         GROUP BY products.id, products.name
         ORDER BY revenue DESC
     """)).fetchall()
@@ -81,13 +90,17 @@ def get_users_without_orders(conn):
 
 def print_section(title, rows, formatter, empty_message):
     print(f"\n{title}:")
+
     if not rows:
         print(f"  {empty_message}")
+
     for row in rows:
         print(f"  {formatter(row)}")
 
 
 def store_report(engine):
+    """Print counts, catalog, top customers, and additional reports."""
+
     with engine.connect() as conn:
         counts = get_counts(conn)
         catalog = get_catalog(conn)
@@ -97,6 +110,7 @@ def store_report(engine):
         no_orders = get_users_without_orders(conn)
 
     print("\n=== Store Dashboard ===")
+
     print(
         f"Users: {counts['users']} | "
         f"Products: {counts['products']} | "
@@ -143,41 +157,54 @@ def store_report(engine):
 
 def add_product(engine, name, category, price, stock):
     """Insert a new product and return its id."""
+
     name = name.strip()
     category = category.strip()
 
     if not name:
         raise ValueError("Product name cannot be empty")
+
     if not category:
         raise ValueError("Category cannot be empty")
+
     if price < 0:
         raise ValueError("Price cannot be negative")
+
     if stock < 0:
         raise ValueError("Stock cannot be negative")
 
     with engine.begin() as conn:
-        product_id = conn.execute(text("""
-            INSERT INTO products (name, category, price, stock)
-            VALUES (:name, :category, :price, :stock)
-            RETURNING id
-        """), {
-            "name": name,
-            "category": category,
-            "price": price,
-            "stock": stock,
-        }).scalar_one()
+        product_id = conn.execute(
+            text("""
+                INSERT INTO products (name, category, price, stock)
+                VALUES (:name, :category, :price, :stock)
+                RETURNING id
+            """),
+            {
+                "name": name,
+                "category": category,
+                "price": price,
+                "stock": stock,
+            },
+        ).scalar_one()
 
     return product_id
 
 
 def place_order(engine, email, product_name, quantity):
     """Create an order and decrease stock in one transaction."""
+
     if quantity <= 0:
         raise ValueError("Quantity must be greater than zero")
 
     with engine.begin() as conn:
+
         user_id = conn.execute(
-            text("SELECT id FROM users WHERE lower(email) = lower(:email)"),
+            text("""
+                SELECT id
+                FROM users
+                WHERE lower(email) = lower(:email)
+            """),
             {"email": email.strip()},
         ).scalar_one_or_none()
 
@@ -204,15 +231,18 @@ def place_order(engine, email, product_name, quantity):
                 f"Not enough stock. Available: {product['stock']}"
             )
 
-        order_id = conn.execute(text("""
-            INSERT INTO orders (user_id, product_id, quantity, status)
-            VALUES (:user_id, :product_id, :quantity, 'pending')
-            RETURNING id
-        """), {
-            "user_id": user_id,
-            "product_id": product["id"],
-            "quantity": quantity,
-        }).scalar_one()
+        order_id = conn.execute(
+            text("""
+                INSERT INTO orders (user_id, product_id, quantity, status)
+                VALUES (:user_id, :product_id, :quantity, 'pending')
+                RETURNING id
+            """),
+            {
+                "user_id": user_id,
+                "product_id": product["id"],
+                "quantity": quantity,
+            },
+        ).scalar_one()
 
         conn.execute(
             text("""
@@ -249,7 +279,14 @@ def handle_add_product(engine):
     price = read_price("Price: ")
     stock = int(input("Stock quantity: "))
 
-    product_id = add_product(engine, name, category, price, stock)
+    product_id = add_product(
+        engine,
+        name,
+        category,
+        price,
+        stock,
+    )
+
     print(f"\nProduct added. ID: {product_id}")
 
 
@@ -258,7 +295,13 @@ def handle_place_order(engine):
     product_name = input("Product name: ")
     quantity = int(input("Quantity: "))
 
-    order_id = place_order(engine, email, product_name, quantity)
+    order_id = place_order(
+        engine,
+        email,
+        product_name,
+        quantity,
+    )
+
     print(f"\nOrder created. ID: {order_id}")
 
 
@@ -266,6 +309,7 @@ def main():
     try:
         engine = get_engine()
         store_report(engine)
+
     except (ValueError, SQLAlchemyError) as error:
         print("\nDatabase error:", error)
         return
@@ -297,8 +341,10 @@ def main():
 
         try:
             action(engine)
+
         except ValueError as error:
             print("\nInput error:", error)
+
         except SQLAlchemyError as error:
             print("\nDatabase error:", error)
 
